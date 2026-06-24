@@ -1,0 +1,10 @@
+aiogram<4,>=3.13
+asyncpg<1,>=0.29
+httpx<1,>=0.27
+pydantic-settings<3,>=2.5
+sqlalchemy[asyncio]<3,>=2.0
+
+[dev]
+pytest<9,>=8.3
+pytest-asyncio<1,>=0.24
+ruff<1,>=0.7

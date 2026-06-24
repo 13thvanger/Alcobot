@@ -1,0 +1,2 @@
+"""Alcobot package."""
+
