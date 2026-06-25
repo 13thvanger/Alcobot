@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 
@@ -23,6 +24,7 @@ class DrinkCalculation:
     drink: Drink | None
     volume_ml: Decimal
     pure_alcohol_ml: Decimal
+    consumed_on: date | None = None
 
     @property
     def summary(self) -> str:
@@ -37,7 +39,7 @@ class DrinkCalculation:
 
     def as_result(self) -> dict:
         if self.drink is None:
-            return {
+            result = {
                 "pure_alcohol_ml": float(self.pure_alcohol_ml),
                 "items": [
                     {
@@ -50,7 +52,10 @@ class DrinkCalculation:
                 "summary": self.summary,
                 "calculation_source": "drink_table",
             }
-        return {
+            if self.consumed_on is not None:
+                result["consumed_on"] = self.consumed_on.isoformat()
+            return result
+        result = {
             "pure_alcohol_ml": float(self.pure_alcohol_ml),
             "items": [
                 {
@@ -63,6 +68,9 @@ class DrinkCalculation:
             "summary": self.summary,
             "calculation_source": "drink_table",
         }
+        if self.consumed_on is not None:
+            result["consumed_on"] = self.consumed_on.isoformat()
+        return result
 
 
 # Кортеж выбран вместо списка, потому что таблица не должна меняться в runtime.
@@ -142,6 +150,36 @@ DRINK_BY_ALIAS = {alias: drink for drink in DRINKS for alias in drink.aliases}
 DRINK_KEYS = {drink.key for drink in DRINKS}
 VOLUME_PATTERN = re.compile(r"^(?P<amount>\d+(?:[.,]\d+)?)\s*(?:ml|мл)?$", re.IGNORECASE)
 ABV_PATTERN = re.compile(r"^(?P<amount>\d+(?:[.,]\d+)?)\s*%$", re.IGNORECASE)
+ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
+NUMERIC_DATE_PATTERN = re.compile(
+    r"^(?P<day>\d{1,2})[./](?P<month>\d{1,2})(?:[./](?P<year>\d{4}))?$"
+)
+RUSSIAN_MONTHS = {
+    "январь": 1,
+    "января": 1,
+    "февраль": 2,
+    "февраля": 2,
+    "март": 3,
+    "марта": 3,
+    "апрель": 4,
+    "апреля": 4,
+    "май": 5,
+    "мая": 5,
+    "июнь": 6,
+    "июня": 6,
+    "июль": 7,
+    "июля": 7,
+    "август": 8,
+    "августа": 8,
+    "сентябрь": 9,
+    "сентября": 9,
+    "октябрь": 10,
+    "октября": 10,
+    "ноябрь": 11,
+    "ноября": 11,
+    "декабрь": 12,
+    "декабря": 12,
+}
 
 
 def _parse_volume(value: str) -> Decimal | None:
@@ -175,52 +213,146 @@ def _parse_abv(value: str) -> Decimal | None:
     return abv
 
 
+def _closest_past_date(day: int, month: int, today: date, year: int | None = None) -> date | None:
+    """Построить дату; без года выбрать последнюю такую дату не позднее today."""
+    candidate_year = year or today.year
+    try:
+        candidate = date(candidate_year, month, day)
+    except ValueError:
+        return None
+    if year is None and candidate > today:
+        try:
+            candidate = date(candidate_year - 1, month, day)
+        except ValueError:
+            return None
+    if candidate > today:
+        return None
+    return candidate
+
+
+def _extract_date(tokens: list[str], today: date) -> tuple[date | None, list[str]] | None:
+    """Извлечь не более одной даты, сохранив остальные аргументы."""
+    found: date | None = None
+    consumed_indexes: set[int] = set()
+
+    for index, token in enumerate(tokens):
+        candidate: date | None = None
+        if ISO_DATE_PATTERN.fullmatch(token):
+            try:
+                candidate = date.fromisoformat(token)
+            except ValueError:
+                return None
+            if candidate > today:
+                return None
+        else:
+            match = NUMERIC_DATE_PATTERN.fullmatch(token)
+            if match:
+                candidate = _closest_past_date(
+                    int(match.group("day")),
+                    int(match.group("month")),
+                    today,
+                    int(match.group("year")) if match.group("year") else None,
+                )
+                if candidate is None:
+                    return None
+        if candidate is not None:
+            if found is not None:
+                return None
+            found = candidate
+            consumed_indexes.add(index)
+
+    # Дата с русским месяцем занимает 2 или 3 токена: "24 мая [2026]".
+    for index, token in enumerate(tokens):
+        if index in consumed_indexes or token not in RUSSIAN_MONTHS:
+            continue
+        day_index: int | None = None
+        if index > 0 and tokens[index - 1].isdigit():
+            day_index = index - 1
+        elif index + 1 < len(tokens) and tokens[index + 1].isdigit():
+            day_index = index + 1
+        if day_index is None:
+            continue
+
+        year: int | None = None
+        year_index: int | None = None
+        for candidate_index in (max(index, day_index) + 1, min(index, day_index) - 1):
+            if (
+                0 <= candidate_index < len(tokens)
+                and candidate_index not in {index, day_index}
+                and len(tokens[candidate_index]) == 4
+                and tokens[candidate_index].isdigit()
+            ):
+                year = int(tokens[candidate_index])
+                year_index = candidate_index
+                break
+
+        candidate = _closest_past_date(
+            int(tokens[day_index]),
+            RUSSIAN_MONTHS[token],
+            today,
+            year,
+        )
+        if candidate is None or found is not None:
+            return None
+        found = candidate
+        consumed_indexes.update({index, day_index})
+        if year_index is not None:
+            consumed_indexes.add(year_index)
+
+    remaining = [token for index, token in enumerate(tokens) if index not in consumed_indexes]
+    return found, remaining
+
+
 def calculate_short_add(
-    text: str, overrides: dict[str, dict[str, Decimal]] | None = None
+    text: str,
+    overrides: dict[str, dict[str, Decimal]] | None = None,
+    current_date: date | None = None,
 ) -> DrinkCalculation | None:
-    """Parse `/add [drink] [millilitres] [ABV%]`.
+    """Parse `/add drink` with volume, ABV and date in any following order.
 
     Для свободного текста возвращается None, после чего обработчик вызывает LLM.
     """
     # Цепочки методов читаются слева направо: lower -> strip -> split.
     parts = text.lower().strip().split()
-    if not parts or len(parts) > 3:
+    if not parts:
         return None
 
-    explicit_abv: Decimal | None = None
     if len(parts) == 1:
         volume = _parse_volume(parts[0])
         if volume is not None:
             return DrinkCalculation(None, volume, volume)
-        drink = DRINK_BY_ALIAS.get(parts[0])
-        if drink is None:
-            return None
-        volume = drink.default_volume_ml
-    elif len(parts) == 2:
-        drink = DRINK_BY_ALIAS.get(parts[0])
-        if drink is None:
-            return None
-        explicit_abv = _parse_abv(parts[1])
-        if explicit_abv is not None:
-            volume = drink.default_volume_ml
-        else:
-            volume = _parse_volume(parts[1])
-            if volume is None:
+
+    drink = DRINK_BY_ALIAS.get(parts[0])
+    if drink is None:
+        return None
+
+    extracted = _extract_date(parts[1:], current_date or date.today())
+    if extracted is None:
+        return None
+    consumed_on, arguments = extracted
+
+    volume: Decimal | None = None
+    explicit_abv: Decimal | None = None
+    for argument in arguments:
+        parsed_abv = _parse_abv(argument)
+        if parsed_abv is not None:
+            if explicit_abv is not None:
                 return None
-    else:
-        drink = DRINK_BY_ALIAS.get(parts[0])
-        if drink is None:
-            return None
-        volume = _parse_volume(parts[1])
-        explicit_abv = _parse_abv(parts[2])
-        if volume is None or explicit_abv is None:
-            return None
+            explicit_abv = parsed_abv
+            continue
+        parsed_volume = _parse_volume(argument)
+        if parsed_volume is not None:
+            if volume is not None:
+                return None
+            volume = parsed_volume
+            continue
+        return None
 
     # ``x or {}`` возвращает первый truthy-операнд. None и пустой dict считаются
     # false. get(key, default) не выбрасывает исключение при отсутствии ключа.
     override = (overrides or {}).get(drink.key, {})
-    if len(parts) == 1 or (len(parts) == 2 and explicit_abv is not None):
-        volume = override.get("volume", volume)
+    if volume is None:
+        volume = override.get("volume", drink.default_volume_ml)
     # Явно написанные пользователем проценты важнее runtime-настроек и таблицы.
     abv = explicit_abv or override.get("abv", drink.abv_percent)
     effective_drink = Drink(
@@ -231,4 +363,4 @@ def calculate_short_add(
         drink.aliases,
     )
     pure_alcohol_ml = (volume * abv / 100).quantize(Decimal("0.01"))
-    return DrinkCalculation(effective_drink, volume, pure_alcohol_ml)
+    return DrinkCalculation(effective_drink, volume, pure_alcohol_ml, consumed_on)

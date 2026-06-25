@@ -77,6 +77,7 @@ HELP_TEXT = """
 <code>/add beer 500</code> — 500 мл пива
 <code>/add beer 500 4%</code> — 500 мл пива крепостью 4%
 <code>/add wine 12%</code> — стандартная порция вина крепостью 12%
+<code>/add beer 24 мая 4% 500</code> — параметры могут идти в любом порядке
 <code>/add wine</code> — стандартные 150 мл вина
 <code>/add tequila 100</code> — 100 мл текилы
 <code>/add 30</code> — 30 мл чистого спирта
@@ -276,6 +277,7 @@ async def add_handler(
             "Укажите напиток и объём или опишите выпитое, например:\n"
             "<code>/add beer 500</code>\n"
             "<code>/add beer 500 4%</code>\n"
+            "<code>/add beer 24 мая 4% 500</code>\n"
             "<code>/add wine</code>\n"
             "<code>/add 30</code> — 30 мл чистого спирта\n"
             "<code>/add 2 бутылки пива и 50 мл виски</code>"
@@ -290,7 +292,11 @@ async def add_handler(
         async with db.session_factory() as session:
             runtime = await get_runtime_config(session, settings)
         today = datetime.now(runtime.timezone).date()
-        short_calculation = calculate_short_add(description, runtime.drink_overrides)
+        short_calculation = calculate_short_add(
+            description,
+            runtime.drink_overrides,
+            current_date=today,
+        )
         if short_calculation is None:
             # None здесь — сигнал "локальный парсер не понял ввод", поэтому
             # используем более дорогой fallback через LLM.
@@ -309,7 +315,7 @@ async def add_handler(
             amount = short_calculation.pure_alcohol_ml
             result = short_calculation.as_result()
             summary = short_calculation.summary
-            consumed_on = today
+            consumed_on = short_calculation.consumed_on or today
             calculation_model = "built-in-drink-table/v1"
         async with db.session_factory() as session:
             pending = await create_pending_entry(
@@ -493,7 +499,11 @@ async def edit_handler(
         async with db.session_factory() as session:
             runtime = await get_runtime_config(session, settings)
         today = datetime.now(runtime.timezone).date()
-        short_calculation = calculate_short_add(description, runtime.drink_overrides)
+        short_calculation = calculate_short_add(
+            description,
+            runtime.drink_overrides,
+            current_date=today,
+        )
         if short_calculation is None:
             estimate = await llm.estimate(
                 description,

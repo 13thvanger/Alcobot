@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 from app.drinks import calculate_short_add
@@ -75,3 +76,52 @@ def test_explicit_abv_overrides_runtime_table() -> None:
 def test_invalid_abv_falls_back_to_llm() -> None:
     assert calculate_short_add("beer 500 0%") is None
     assert calculate_short_add("beer 500 101%") is None
+
+
+def test_manual_arguments_can_be_in_any_order() -> None:
+    today = date(2026, 6, 25)
+    variants = (
+        "beer 500 4% 24 мая",
+        "beer 4% 24 мая 500",
+        "beer 24 мая 500 4%",
+        "beer 24 мая 4% 500",
+    )
+    for text in variants:
+        result = calculate_short_add(text, current_date=today)
+        assert result is not None
+        assert result.volume_ml == Decimal("500")
+        assert result.pure_alcohol_ml == Decimal("20.00")
+        assert result.consumed_on == date(2026, 5, 24)
+
+
+def test_manual_numeric_and_iso_dates() -> None:
+    today = date(2026, 6, 25)
+    dotted = calculate_short_add("wine 12% 750 24.05.2026", current_date=today)
+    iso = calculate_short_add("wine 2026-05-24 750 12%", current_date=today)
+
+    assert dotted is not None and dotted.consumed_on == date(2026, 5, 24)
+    assert iso is not None and iso.consumed_on == date(2026, 5, 24)
+    assert dotted.pure_alcohol_ml == Decimal("90.00")
+    assert iso.pure_alcohol_ml == Decimal("90.00")
+
+
+def test_manual_date_without_year_uses_closest_past_date() -> None:
+    result = calculate_short_add(
+        "beer 31 декабря 500 5%",
+        current_date=date(2026, 6, 25),
+    )
+    assert result is not None
+    assert result.consumed_on == date(2025, 12, 31)
+
+
+def test_manual_date_with_default_volume() -> None:
+    result = calculate_short_add("wine 12% 24 мая", current_date=date(2026, 6, 25))
+    assert result is not None
+    assert result.volume_ml == Decimal("150")
+    assert result.consumed_on == date(2026, 5, 24)
+
+
+def test_duplicate_or_future_manual_date_falls_back_to_llm() -> None:
+    today = date(2026, 6, 25)
+    assert calculate_short_add("beer 24 мая 25 мая", current_date=today) is None
+    assert calculate_short_add("beer 2026-06-26", current_date=today) is None
