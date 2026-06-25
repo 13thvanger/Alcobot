@@ -33,6 +33,8 @@ Telegram-бот для учёта выпитого алкоголя в милл�
 /add wine 12%
 /add beer 24 мая 4% 500
 /add wine 12% 750 24.05.2026
+/add бокал вина 12%
+/add стопка водки 24 мая
 /add wine
 /add tequila 100
 /add 30

@@ -166,3 +166,25 @@ def test_explicit_volume_overrides_serving_word() -> None:
     assert result is not None
     assert result.volume_ml == Decimal("400")
     assert result.pure_alcohol_ml == Decimal("16.00")
+
+
+def test_serving_word_can_precede_russian_drink() -> None:
+    beer = calculate_short_add("бокал пива")
+    wine = calculate_short_add("бокал вина 12%")
+    vodka = calculate_short_add(
+        "стопка водки 24 мая",
+        current_date=date(2026, 6, 25),
+    )
+
+    assert beer is not None and beer.volume_ml == Decimal("500")
+    assert wine is not None and wine.volume_ml == Decimal("150")
+    assert wine.pure_alcohol_ml == Decimal("18.00")
+    assert vodka is not None and vodka.volume_ml == Decimal("50")
+    assert vodka.consumed_on == date(2026, 5, 24)
+
+
+def test_serving_word_can_precede_english_drink() -> None:
+    result = calculate_short_add("glass beer 4% 400")
+    assert result is not None
+    assert result.volume_ml == Decimal("400")
+    assert result.pure_alcohol_ml == Decimal("16.00")

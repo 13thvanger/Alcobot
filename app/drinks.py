@@ -75,36 +75,36 @@ class DrinkCalculation:
 
 # Кортеж выбран вместо списка, потому что таблица не должна меняться в runtime.
 DRINKS = (
-    Drink("beer", "Пиво", Decimal("5"), Decimal("500"), ("beer", "пиво")),
+    Drink("beer", "Пиво", Decimal("5"), Decimal("500"), ("beer", "пиво", "пива")),
     Drink(
         "cider",
         "Сидр",
         Decimal("5"),
         Decimal("500"),
-        ("cider", "сидр"),
+        ("cider", "сидр", "сидра"),
     ),
     Drink(
         "wine",
         "Вино",
         Decimal("12"),
         Decimal("150"),
-        ("wine", "вино"),
+        ("wine", "вино", "вина"),
     ),
     Drink(
         "champagne",
         "Игристое вино",
         Decimal("12"),
         Decimal("150"),
-        ("champagne", "sparkling", "шампанское", "игристое"),
+        ("champagne", "sparkling", "шампанское", "игристое", "шампанского"),
     ),
     Drink(
         "vermouth",
         "Вермут",
         Decimal("16"),
         Decimal("150"),
-        ("vermouth", "вермут", "martini", "мартини"),
+        ("vermouth", "вермут", "вермута", "martini", "мартини"),
     ),
-    Drink("vodka", "Водка", Decimal("40"), Decimal("50"), ("vodka", "водка")),
+    Drink("vodka", "Водка", Decimal("40"), Decimal("50"), ("vodka", "водка", "водки")),
     Drink(
         "whiskey",
         "Виски",
@@ -112,35 +112,35 @@ DRINKS = (
         Decimal("50"),
         ("whiskey", "whisky", "виски"),
     ),
-    Drink("rum", "Ром", Decimal("40"), Decimal("50"), ("rum", "ром")),
-    Drink("gin", "Джин", Decimal("40"), Decimal("50"), ("gin", "джин")),
+    Drink("rum", "Ром", Decimal("40"), Decimal("50"), ("rum", "ром", "рома")),
+    Drink("gin", "Джин", Decimal("40"), Decimal("50"), ("gin", "джин", "джина")),
     Drink(
         "tequila",
         "Текила",
         Decimal("40"),
         Decimal("50"),
-        ("tequila", "текила"),
+        ("tequila", "текила", "текилы"),
     ),
     Drink(
         "cognac",
         "Коньяк",
         Decimal("40"),
         Decimal("50"),
-        ("cognac", "brandy", "коньяк", "бренди"),
+        ("cognac", "brandy", "коньяк", "коньяка", "бренди"),
     ),
     Drink(
         "liqueur",
         "Ликёр",
         Decimal("25"),
         Decimal("50"),
-        ("liqueur", "liquor", "ликер", "ликёр"),
+        ("liqueur", "liquor", "ликер", "ликёр", "ликера", "ликёра"),
     ),
     Drink(
         "absinthe",
         "Абсент",
         Decimal("70"),
         Decimal("50"),
-        ("absinthe", "абсент"),
+        ("absinthe", "абсент", "абсента"),
     ),
 )
 
@@ -317,6 +317,11 @@ def calculate_short_add(
     parts = text.lower().strip().split()
     if not parts:
         return None
+
+    # Разрешаем естественный порядок "бокал вина" наряду с "wine бокал".
+    # Внутри парсера нормализуем его к единому виду: напиток идёт первым.
+    if len(parts) >= 2 and parts[0] in SERVING_WORDS and parts[1] in DRINK_BY_ALIAS:
+        parts = [parts[1], parts[0], *parts[2:]]
 
     if len(parts) == 1:
         volume = _parse_volume(parts[0])
