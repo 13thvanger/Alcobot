@@ -1,3 +1,5 @@
+"""Детерминированный калькулятор для короткой формы команды /add."""
+
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -5,6 +7,8 @@ from decimal import Decimal, InvalidOperation
 
 @dataclass(frozen=True)
 class Drink:
+    # @dataclass генерирует __init__, __repr__ и сравнение объектов.
+    # frozen=True запрещает менять поля после создания — аналог value object.
     key: str
     title: str
     abv_percent: Decimal
@@ -14,6 +18,8 @@ class Drink:
 
 @dataclass(frozen=True)
 class DrinkCalculation:
+    # Union через ``|``: drink либо Drink, либо None (аналог nullable pointer,
+    # но None нельзя разыменовать — перед использованием нужна проверка).
     drink: Drink | None
     volume_ml: Decimal
     pure_alcohol_ml: Decimal
@@ -22,6 +28,8 @@ class DrinkCalculation:
     def summary(self) -> str:
         if self.drink is None:
             return f"{self.volume_ml:g} мл чистого спирта"
+        # f-string подставляет выражения из {...}; спецификатор :g компактно
+        # форматирует Decimal без лишних конечных нулей.
         return (
             f"{self.drink.title}: {self.volume_ml:g} мл × "
             f"{self.drink.abv_percent:g}% = {self.pure_alcohol_ml:g} мл спирта"
@@ -57,6 +65,7 @@ class DrinkCalculation:
         }
 
 
+# Кортеж выбран вместо списка, потому что таблица не должна меняться в runtime.
 DRINKS = (
     Drink("beer", "Пиво", Decimal("5"), Decimal("500"), ("beer", "пиво")),
     Drink(
@@ -127,32 +136,58 @@ DRINKS = (
     ),
 )
 
+# Dict/set comprehensions — компактные циклы создания контейнеров.
+# Первая строка эквивалентна двум вложенным for и присваиванию в dict.
 DRINK_BY_ALIAS = {alias: drink for drink in DRINKS for alias in drink.aliases}
 DRINK_KEYS = {drink.key for drink in DRINKS}
 VOLUME_PATTERN = re.compile(r"^(?P<amount>\d+(?:[.,]\d+)?)\s*(?:ml|мл)?$", re.IGNORECASE)
+ABV_PATTERN = re.compile(r"^(?P<amount>\d+(?:[.,]\d+)?)\s*%$", re.IGNORECASE)
 
 
 def _parse_volume(value: str) -> Decimal | None:
+    # Начальный ``_`` — соглашение "внутренняя функция модуля", не модификатор
+    # private: при желании импортировать её всё равно возможно.
     match = VOLUME_PATTERN.fullmatch(value.strip())
     if match is None:
         return None
     try:
         volume = Decimal(match.group("amount").replace(",", "."))
     except InvalidOperation:
+        # Исключения работают близко к C++ exceptions. Здесь неверный ввод —
+        # ожидаемая ситуация, поэтому превращаем его в None.
         return None
     if volume <= 0 or volume > Decimal("10000"):
         return None
     return volume
 
 
+def _parse_abv(value: str) -> Decimal | None:
+    """Разобрать крепость вида ``4%`` или ``12,5%``."""
+    match = ABV_PATTERN.fullmatch(value.strip())
+    if match is None:
+        return None
+    try:
+        abv = Decimal(match.group("amount").replace(",", "."))
+    except InvalidOperation:
+        return None
+    if abv <= 0 or abv > 100:
+        return None
+    return abv
+
+
 def calculate_short_add(
     text: str, overrides: dict[str, dict[str, Decimal]] | None = None
 ) -> DrinkCalculation | None:
-    """Parse `/add [drink] [millilitres]`; return None for free-form LLM input."""
+    """Parse `/add [drink] [millilitres] [ABV%]`.
+
+    Для свободного текста возвращается None, после чего обработчик вызывает LLM.
+    """
+    # Цепочки методов читаются слева направо: lower -> strip -> split.
     parts = text.lower().strip().split()
-    if not parts or len(parts) > 2:
+    if not parts or len(parts) > 3:
         return None
 
+    explicit_abv: Decimal | None = None
     if len(parts) == 1:
         volume = _parse_volume(parts[0])
         if volume is not None:
@@ -161,18 +196,33 @@ def calculate_short_add(
         if drink is None:
             return None
         volume = drink.default_volume_ml
+    elif len(parts) == 2:
+        drink = DRINK_BY_ALIAS.get(parts[0])
+        if drink is None:
+            return None
+        explicit_abv = _parse_abv(parts[1])
+        if explicit_abv is not None:
+            volume = drink.default_volume_ml
+        else:
+            volume = _parse_volume(parts[1])
+            if volume is None:
+                return None
     else:
         drink = DRINK_BY_ALIAS.get(parts[0])
         if drink is None:
             return None
         volume = _parse_volume(parts[1])
-        if volume is None:
+        explicit_abv = _parse_abv(parts[2])
+        if volume is None or explicit_abv is None:
             return None
 
+    # ``x or {}`` возвращает первый truthy-операнд. None и пустой dict считаются
+    # false. get(key, default) не выбрасывает исключение при отсутствии ключа.
     override = (overrides or {}).get(drink.key, {})
-    if len(parts) == 1:
+    if len(parts) == 1 or (len(parts) == 2 and explicit_abv is not None):
         volume = override.get("volume", volume)
-    abv = override.get("abv", drink.abv_percent)
+    # Явно написанные пользователем проценты важнее runtime-настроек и таблицы.
+    abv = explicit_abv or override.get("abv", drink.abv_percent)
     effective_drink = Drink(
         drink.key,
         drink.title,

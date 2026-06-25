@@ -1,12 +1,34 @@
 import pytest
 
-from app.runtime_settings import validate_setting
+from app.runtime_settings import get_all_settings, validate_setting
+
+
+class FakeRow:
+    def __init__(self, key: str, value: str) -> None:
+        self.key = key
+        self.value = value
+
+
+class FakeSession:
+    async def execute(self, _query):
+        return [
+            FakeRow("timezone", "Europe/Moscow"),
+            FakeRow("llm_max_tokens", "4000"),
+        ]
+
+
+async def test_get_all_settings_converts_result_rows() -> None:
+    values = await get_all_settings(FakeSession())  # type: ignore[arg-type]
+    assert values == {
+        "timezone": "Europe/Moscow",
+        "llm_max_tokens": "4000",
+    }
 
 
 def test_validate_regular_settings() -> None:
     assert validate_setting("timezone", "Europe/Moscow", {"beer"}) == "Europe/Moscow"
     assert validate_setting("llm_temperature", "0,5", {"beer"}) == "0.5"
-    assert validate_setting("llm_max_tokens", "2000", {"beer"}) == "2000"
+    assert validate_setting("llm_max_tokens", "4000", {"beer"}) == "4000"
 
 
 def test_validate_drink_settings() -> None:

@@ -1,3 +1,5 @@
+"""Настройки, которые администратор меняет без перезапуска приложения."""
+
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -24,19 +26,23 @@ class RuntimeConfig:
 
 
 async def get_all_settings(session: AsyncSession) -> dict[str, str]:
-    rows = await session.execute(select(BotSetting.key, BotSetting.value))
-    return dict(rows)
+    result = await session.execute(select(BotSetting.key, BotSetting.value))
+    # SQLAlchemy возвращает Result с объектами Row, а не обычный list кортежей.
+    # Явно преобразуем каждую строку в пару key/value. Это совместимо с
+    # ChunkedIteratorResult и не полагается на внутреннее поведение dict().
+    return {row.key: row.value for row in result}
 
 
 async def get_runtime_config(session: AsyncSession, defaults: Settings) -> RuntimeConfig:
     values = await get_all_settings(session)
     timezone = ZoneInfo(values.get("timezone", defaults.app_timezone))
     temperature = float(values.get("llm_temperature", "0"))
-    max_tokens = int(values.get("llm_max_tokens", "2000"))
+    max_tokens = int(values.get("llm_max_tokens", "4000"))
     overrides: dict[str, dict[str, Decimal]] = {}
     for key, value in values.items():
         parts = key.split(".")
         if len(parts) == 3 and parts[0] == "drink" and parts[2] in {"abv", "volume"}:
+            # setdefault создаёт вложенный dict только при отсутствии ключа.
             overrides.setdefault(parts[1], {})[parts[2]] = Decimal(value)
     return RuntimeConfig(timezone, temperature, max_tokens, overrides)
 

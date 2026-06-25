@@ -1,3 +1,5 @@
+"""Чистые функции расчёта статистики, не зависящие от Telegram и PostgreSQL."""
+
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -27,7 +29,10 @@ def _streaks(days: list[date], today: date) -> tuple[int, int]:
     if not days:
         return 0, 0
 
+    # Цепочное присваивание записывает одно значение в обе переменные.
     longest = current_run = 1
+    # Срез days[1:] создаёт список без первого элемента. zip объединяет элементы
+    # попарно, поэтому получаем (предыдущая дата, текущая дата).
     for previous, current in zip(days, days[1:], strict=False):
         if current == previous + timedelta(days=1):
             current_run += 1
@@ -36,11 +41,13 @@ def _streaks(days: list[date], today: date) -> tuple[int, int]:
             current_run = 1
 
     last_day = days[-1]
+    # Тернарное выражение Python: value_if_true if condition else value_if_false.
     current_streak = current_run if last_day in {today, today - timedelta(days=1)} else 0
     return longest, current_streak
 
 
 def calculate_statistics(entries: list[EntryValue], today: date) -> AlcoholStatistics | None:
+    # List comprehension — фильтрация и построение списка в одном выражении.
     positive = [
         entry
         for entry in entries
@@ -49,14 +56,16 @@ def calculate_statistics(entries: list[EntryValue], today: date) -> AlcoholStati
     if not positive:
         return None
 
-    by_day: dict[date, Decimal] = defaultdict(Decimal)
+    # defaultdict(Decimal) создаёт Decimal(0) при первом обращении к новому ключу.
     by_month: dict[tuple[int, int], Decimal] = defaultdict(Decimal)
+    by_day: dict[date, Decimal] = defaultdict(Decimal)
     total = Decimal()
     for entry in positive:
         total += entry.amount
         by_day[entry.consumed_on] += entry.amount
         by_month[(entry.consumed_on.year, entry.consumed_on.month)] += entry.amount
 
+    # lambda — короткая анонимная функция. max сравнивает элементы по сумме item[1].
     strongest_month_key, strongest_month_amount = max(by_month.items(), key=lambda item: item[1])
     strongest_day, strongest_day_amount = max(by_day.items(), key=lambda item: item[1])
     longest_streak, current_streak = _streaks(sorted(by_day), today)
@@ -67,6 +76,7 @@ def calculate_statistics(entries: list[EntryValue], today: date) -> AlcoholStati
         drinking_days=len(by_day),
         average_per_month=total / today.month,
         average_per_year=total / today.month * 12,
+        # * распаковывает tuple (year, month) внутрь нового tuple из трёх элементов.
         strongest_month=(*strongest_month_key, strongest_month_amount),
         strongest_day=(strongest_day, strongest_day_amount),
         longest_streak=longest_streak,

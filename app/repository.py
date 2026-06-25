@@ -1,14 +1,21 @@
-from datetime import date
+"""Слой доступа к данным.
+
+Обработчики Telegram не составляют SQL сами, а вызывают функции этого модуля.
+"""
+
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AlcoholEntry, User
+from app.models import AlcoholEntry, PendingAlcoholEntry, User
 from app.statistics import EntryValue
 
 
 async def get_user(session: AsyncSession, telegram_user_id: int) -> User | None:
+    # Для primary key SQLAlchemy предоставляет короткий session.get().
     return await session.get(User, telegram_user_id)
 
 
@@ -20,6 +27,7 @@ async def set_user_name(
 ) -> User:
     user = await get_user(session, telegram_user_id)
     if user is None:
+        # Конструктор ORM-модели принимает поля как именованные аргументы.
         user = User(
             telegram_user_id=telegram_user_id,
             display_name=display_name,
@@ -29,6 +37,7 @@ async def set_user_name(
     else:
         user.display_name = display_name
         user.telegram_username = telegram_username
+    # Изменения до commit живут в транзакции и ещё не гарантированно сохранены.
     await session.commit()
     return user
 
@@ -57,6 +66,8 @@ async def ensure_user(
 async def add_entry(
     session: AsyncSession,
     *,
+    # Все параметры после * — keyword-only. Это защищает длинный вызов от
+    # случайной перестановки нескольких int/str одинакового типа.
     telegram_user_id: int,
     telegram_username: str | None,
     source_chat_id: int,
@@ -80,8 +91,96 @@ async def add_entry(
     )
     session.add(entry)
     await session.commit()
+    # refresh перечитывает объект из БД, например автосгенерированный id.
     await session.refresh(entry)
     return entry
+
+
+async def create_pending_entry(
+    session: AsyncSession,
+    *,
+    telegram_user_id: int,
+    telegram_username: str | None,
+    source_chat_id: int,
+    source_message_id: int,
+    original_text: str,
+    pure_alcohol_ml: Decimal,
+    consumed_on: date,
+    llm_model: str,
+    llm_result: dict,
+) -> PendingAlcoholEntry:
+    pending = PendingAlcoholEntry(
+        # uuid4().hex даёт случайный 32-символьный токен без дефисов.
+        token=uuid4().hex,
+        telegram_user_id=telegram_user_id,
+        telegram_username=telegram_username,
+        source_chat_id=source_chat_id,
+        source_message_id=source_message_id,
+        original_text=original_text,
+        pure_alcohol_ml=pure_alcohol_ml,
+        consumed_on=consumed_on,
+        llm_model=llm_model,
+        llm_result=llm_result,
+    )
+    session.add(pending)
+    await session.commit()
+    await session.refresh(pending)
+    return pending
+
+
+async def get_pending_entry(session: AsyncSession, token: str) -> PendingAlcoholEntry | None:
+    return await session.get(PendingAlcoholEntry, token)
+
+
+async def cancel_pending_entry(
+    session: AsyncSession, token: str, telegram_user_id: int
+) -> bool:
+    pending = await get_pending_entry(session, token)
+    if pending is None or pending.telegram_user_id != telegram_user_id:
+        return False
+    await session.delete(pending)
+    await session.commit()
+    return True
+
+
+async def confirm_pending_entry(
+    session: AsyncSession,
+    token: str,
+    telegram_user_id: int,
+    *,
+    lifetime_minutes: int = 30,
+) -> tuple[str, AlcoholEntry | None]:
+    # Возвращаем tuple из статуса и необязательной записи.
+    pending = await get_pending_entry(session, token)
+    if pending is None:
+        return "missing", None
+    if pending.telegram_user_id != telegram_user_id:
+        return "forbidden", None
+    created_at = pending.created_at
+    if created_at.tzinfo is None:
+        # datetime может быть с timezone или без неё; смешивать варианты нельзя.
+        created_at = created_at.replace(tzinfo=UTC)
+    if datetime.now(UTC) - created_at > timedelta(minutes=lifetime_minutes):
+        await session.delete(pending)
+        await session.commit()
+        return "expired", None
+
+    entry = AlcoholEntry(
+        telegram_user_id=pending.telegram_user_id,
+        telegram_username=pending.telegram_username,
+        source_chat_id=pending.source_chat_id,
+        source_message_id=pending.source_message_id,
+        original_text=pending.original_text,
+        pure_alcohol_ml=pending.pure_alcohol_ml,
+        consumed_on=pending.consumed_on,
+        llm_model=pending.llm_model,
+        llm_result=pending.llm_result,
+    )
+    session.add(entry)
+    await session.delete(pending)
+    await session.commit()
+    await session.refresh(entry)
+    return "confirmed", entry
 
 
 async def list_entry_values(session: AsyncSession, telegram_user_id: int) -> list[EntryValue]:
@@ -90,6 +189,7 @@ async def list_entry_values(session: AsyncSession, telegram_user_id: int) -> lis
         .where(AlcoholEntry.telegram_user_id == telegram_user_id)
         .order_by(AlcoholEntry.consumed_on)
     )
+    # SQL-строки превращаем comprehension-выражением в value objects.
     return [EntryValue(consumed_on=row[0], amount=row[1]) for row in rows]
 
 
@@ -102,6 +202,7 @@ async def latest_entries(
         .order_by(AlcoholEntry.created_at.desc())
         .limit(limit)
     )
+    # ScalarResult — iterable; list материализует все его элементы.
     return list(rows)
 
 

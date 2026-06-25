@@ -1,3 +1,5 @@
+"""ORM-модели: Python-классы, отображаемые SQLAlchemy на таблицы PostgreSQL."""
+
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -17,14 +19,18 @@ from sqlalchemy.sql import func
 
 
 class Base(DeclarativeBase):
+    # pass — пустой оператор. Класс нужен как общий предок и реестр ORM-моделей.
     pass
 
 
 class User(Base):
     __tablename__ = "users"
 
+    # Mapped[int] сообщает анализатору тип Python-атрибута, а mapped_column
+    # описывает физический SQL-столбец. Это две связанные, но разные системы типов.
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     display_name: Mapped[str] = mapped_column(String(100))
+    # ``str | None`` — Optional: здесь может лежать строка или SQL NULL.
     telegram_username: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -32,6 +38,8 @@ class User(Base):
     )
 
     entries: Mapped[list["AlcoholEntry"]] = relationship(
+        # Строка "AlcoholEntry" — forward reference: класс объявлен ниже.
+        # cascade удаляет зависимые записи вместе с пользователем.
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -39,6 +47,8 @@ class User(Base):
 class AlcoholEntry(Base):
     __tablename__ = "alcohol_entries"
     __table_args__ = (
+        # Кортеж из одного элемента обязан иметь завершающую запятую.
+        # Без неё скобки были бы просто группировкой выражения.
         UniqueConstraint("source_chat_id", "source_message_id", name="uq_entry_source_message"),
     )
 
@@ -57,6 +67,24 @@ class AlcoholEntry(Base):
     llm_result: Mapped[dict] = mapped_column(JSONB)
 
     user: Mapped[User] = relationship(back_populates="entries")
+
+
+class PendingAlcoholEntry(Base):
+    __tablename__ = "pending_alcohol_entries"
+
+    token: Mapped[str] = mapped_column(String(32), primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.telegram_user_id", ondelete="CASCADE"), index=True
+    )
+    telegram_username: Mapped[str | None] = mapped_column(String(64))
+    source_chat_id: Mapped[int] = mapped_column(BigInteger)
+    source_message_id: Mapped[int] = mapped_column(BigInteger)
+    original_text: Mapped[str] = mapped_column(Text)
+    pure_alcohol_ml: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    consumed_on: Mapped[date] = mapped_column(Date)
+    llm_model: Mapped[str] = mapped_column(String(100))
+    llm_result: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class BotSetting(Base):

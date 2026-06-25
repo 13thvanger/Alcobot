@@ -1,6 +1,9 @@
+"""Чтение редактируемых фраз из текстового файла."""
+
 import random
 from pathlib import Path
 
+# __file__ — путь текущего .py-файла. Path одинаково работает в разных ОС.
 PHRASES_FILE = Path(__file__).with_name("phrases.txt")
 KNOWN_SECTIONS = {"add", "stat"}
 
@@ -10,6 +13,7 @@ def load_phrases() -> dict[str, tuple[str, ...]]:
     try:
         lines = PHRASES_FILE.read_text(encoding="utf-8").splitlines()
     except OSError:
+        # Ошибка чтения фраз не должна останавливать всего бота.
         return {section: () for section in KNOWN_SECTIONS}
 
     current_section: str | None = None
@@ -23,6 +27,7 @@ def load_phrases() -> dict[str, tuple[str, ...]]:
             continue
         if current_section is not None:
             result[current_section].append(line)
+    # Наружу отдаём неизменяемые tuple вместо внутренних списков.
     return {section: tuple(values) for section, values in result.items()}
 
 

@@ -1,11 +1,23 @@
+"""Telegram-команды и callback-обработчики.
+
+Этот файл полезно читать после main.py и repository.py: здесь виден полный путь
+данных от сообщения пользователя до LLM/БД и обратно в Telegram.
+"""
+
 import logging
 from datetime import datetime
 from decimal import Decimal
 from html import escape
 
-from aiogram import Bot, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BotCommand, Message
+from aiogram.types import (
+    BotCommand,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from sqlalchemy.exc import IntegrityError
 
 from app.config import Settings
@@ -14,8 +26,10 @@ from app.drinks import DRINK_KEYS, DRINKS, calculate_short_add
 from app.llm import AlcoholLLMClient, LLMError
 from app.phrases import random_phrase
 from app.repository import (
-    add_entry,
     admin_delete_entry,
+    cancel_pending_entry,
+    confirm_pending_entry,
+    create_pending_entry,
     delete_entry,
     ensure_user,
     latest_entries,
@@ -61,6 +75,8 @@ HELP_TEXT = """
 
 Короткий формат по таблице напитков:
 <code>/add beer 500</code> — 500 мл пива
+<code>/add beer 500 4%</code> — 500 мл пива крепостью 4%
+<code>/add wine 12%</code> — стандартная порция вина крепостью 12%
 <code>/add wine</code> — стандартные 150 мл вина
 <code>/add tequila 100</code> — 100 мл текилы
 <code>/add 30</code> — 30 мл чистого спирта
@@ -70,9 +86,13 @@ HELP_TEXT = """
 
 Свободное описание рассчитывается через ИИ:
 <code>/add две бутылки пива по 0.5 л и 50 мл виски</code>
+<code>/add выпил пузырь водки 24 мая</code>
+<code>/add бутылка красного вина 12%</code>
 
 Если объём не указан, стандартная порция составляет 500 мл для пива и сидра,
 150 мл для вина и похожих напитков, 50 мл для крепкого алкоголя.
+«Пузырь» считается бутылкой; дата из текста используется как дата записи.
+Перед сохранением бот покажет распознанные напитки и попросит подтвердить добавление.
 
 <b>/stat</b> — статистика за текущий год по всем чатам.
 <code>/stat</code>
@@ -108,7 +128,7 @@ ADMIN_HELP_TEXT = """
 <code>/admin_config</code> — текущие изменённые настройки
 <code>/admin_set timezone Europe/Moscow</code>
 <code>/admin_set llm_temperature 0</code>
-<code>/admin_set llm_max_tokens 2000</code>
+<code>/admin_set llm_max_tokens 4000</code>
 <code>/admin_set drink.beer.abv 5</code>
 <code>/admin_set drink.beer.volume 500</code>
 <code>/admin_unset drink.beer.abv</code> — вернуть значение по умолчанию
@@ -124,12 +144,60 @@ ADMIN_HELP_TEXT = """
 
 
 def command_argument(message: Message) -> str:
+    # ``or`` здесь заменяет возможный None на пустую строку.
     text = message.text or ""
+    # partition всегда возвращает tuple: (до разделителя, разделитель, после).
     return text.partition(" ")[2].strip()
 
 
 def ml(value: Decimal) -> str:
     return f"{value.quantize(Decimal('0.1'))} мл"
+
+
+def confirmation_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Добавить",
+                    callback_data=f"add_confirm:{token}",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data=f"add_cancel:{token}",
+                ),
+            ]
+        ]
+    )
+
+
+def format_calculation_items(result: dict, original_text: str) -> str:
+    items = result.get("items")
+    if not isinstance(items, list) or not items:
+        return f"• {escape(original_text)}"
+
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = escape(str(item.get("name") or "напиток"))
+        volume = item.get("volume_ml")
+        abv = item.get("abv_percent")
+        item_alcohol = item.get("pure_alcohol_ml")
+        details: list[str] = []
+        if volume is not None:
+            details.append(f"{escape(str(volume))} мл")
+        if abv is not None:
+            details.append(f"{escape(str(abv))}%")
+        # join объединяет строки без ручной обработки последней запятой.
+        suffix = f" ({', '.join(details)})" if details else ""
+        alcohol = (
+            f" → {escape(str(item_alcohol))} мл спирта"
+            if item_alcohol is not None
+            else ""
+        )
+        lines.append(f"• <b>{name}</b>{suffix}{alcohol}")
+    return "\n".join(lines) if lines else f"• {escape(original_text)}"
 
 
 async def require_admin(message: Message, settings: Settings) -> bool:
@@ -142,6 +210,7 @@ async def require_admin(message: Message, settings: Settings) -> bool:
 async def ensure_message_user(message: Message, db: Database):
     if message.from_user is None:
         return None
+    # Short-circuit: full_name используется только если username пуст.
     fallback_name = message.from_user.username or message.from_user.full_name
     async with db.session_factory() as session:
         user = await ensure_user(
@@ -153,6 +222,8 @@ async def ensure_message_user(message: Message, db: Database):
     return user
 
 
+# Декоратор регистрирует функцию в Router. Aiogram вызовет её только для
+# сообщений, которые прошли фильтр CommandStart.
 @router.message(CommandStart())
 async def start_handler(message: Message) -> None:
     await message.answer(
@@ -172,6 +243,7 @@ async def help_handler(message: Message, settings: Settings) -> None:
 
 @router.message(Command("username"))
 async def username_handler(message: Message, db: Database) -> None:
+    # db внедряется aiogram по имени параметра из start_polling(..., db=db).
     if message.from_user is None:
         return
     name = command_argument(message)
@@ -203,6 +275,7 @@ async def add_handler(
         await message.answer(
             "Укажите напиток и объём или опишите выпитое, например:\n"
             "<code>/add beer 500</code>\n"
+            "<code>/add beer 500 4%</code>\n"
             "<code>/add wine</code>\n"
             "<code>/add 30</code> — 30 мл чистого спирта\n"
             "<code>/add 2 бутылки пива и 50 мл виски</code>"
@@ -216,25 +289,30 @@ async def add_handler(
     try:
         async with db.session_factory() as session:
             runtime = await get_runtime_config(session, settings)
+        today = datetime.now(runtime.timezone).date()
         short_calculation = calculate_short_add(description, runtime.drink_overrides)
         if short_calculation is None:
+            # None здесь — сигнал "локальный парсер не понял ввод", поэтому
+            # используем более дорогой fallback через LLM.
             estimate = await llm.estimate(
                 description,
+                current_date=today,
                 temperature=runtime.llm_temperature,
                 max_tokens=runtime.llm_max_tokens,
             )
             amount = estimate.pure_alcohol_ml
             result = estimate.raw
             summary = estimate.summary
+            consumed_on = estimate.consumed_on
             calculation_model = llm.model
         else:
             amount = short_calculation.pure_alcohol_ml
             result = short_calculation.as_result()
             summary = short_calculation.summary
+            consumed_on = today
             calculation_model = "built-in-drink-table/v1"
-        consumed_on = datetime.now(runtime.timezone).date()
         async with db.session_factory() as session:
-            await add_entry(
+            pending = await create_pending_entry(
                 session,
                 telegram_user_id=message.from_user.id,
                 telegram_username=message.from_user.username,
@@ -246,9 +324,6 @@ async def add_handler(
                 llm_model=calculation_model,
                 llm_result=result,
             )
-    except IntegrityError:
-        await waiting.edit_text("Эта команда уже была учтена.")
-        return
     except LLMError as exc:
         logger.warning("LLM request failed: %s", exc)
         await waiting.edit_text(
@@ -256,17 +331,84 @@ async def add_handler(
         )
         return
     except Exception:
-        logger.exception("Failed to add alcohol entry")
-        await waiting.edit_text("Не удалось сохранить запись. Попробуйте позже.")
+        # Широкий Exception допустим на внешней границе: пользователю отдаём
+        # безопасный текст, а полный traceback остаётся в логах.
+        logger.exception("Failed to prepare alcohol entry")
+        await waiting.edit_text("Не удалось подготовить запись. Попробуйте позже.")
         return
 
+    items_text = format_calculation_items(result, description)
     details = f"\n\n<i>{escape(summary)}</i>" if summary else ""
+    await waiting.edit_text(
+        f"Ты выпил за <b>{consumed_on:%d.%m.%Y}</b>:\n\n"
+        f"{items_text}\n\n"
+        f"Итого: <b>{ml(amount)}</b> чистого спирта.{details}\n\n"
+        "<b>Добавляю в статистику?</b>",
+        reply_markup=confirmation_keyboard(pending.token),
+    )
+
+
+@router.callback_query(F.data.startswith("add_confirm:"))
+async def confirm_add_handler(callback: CallbackQuery, db: Database) -> None:
+    if callback.from_user is None or callback.data is None:
+        return
+    token = callback.data.partition(":")[2]
+    try:
+        async with db.session_factory() as session:
+            # Tuple unpacking: два результата функции сразу попадают в переменные.
+            status, entry = await confirm_pending_entry(
+                session,
+                token,
+                callback.from_user.id,
+            )
+    except IntegrityError:
+        await callback.answer("Эта команда уже была учтена.", show_alert=True)
+        return
+    except Exception:
+        logger.exception("Failed to confirm alcohol entry")
+        await callback.answer("Не удалось сохранить запись.", show_alert=True)
+        return
+
+    if status == "forbidden":
+        await callback.answer("Подтвердить может только автор команды.", show_alert=True)
+        return
+    if status == "expired":
+        await callback.answer("Подтверждение устарело. Выполните /add ещё раз.", show_alert=True)
+        if callback.message:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        return
+    if status == "missing" or entry is None:
+        await callback.answer("Этот расчёт уже обработан или отменён.", show_alert=True)
+        return
+
     phrase = random_phrase("add")
     phrase_text = f"\n\n💬 <i>{escape(phrase)}</i>" if phrase else ""
-    await waiting.edit_text(
-        f"Записано за {consumed_on:%d.%m.%Y}: <b>{ml(amount)}</b> "
-        f"чистого алкоголя.{details}{phrase_text}"
-    )
+    # Для Optional это краткая форма ``if callback.message is not None``.
+    if callback.message:
+        await callback.message.edit_text(
+            f"✅ Записано за {entry.consumed_on:%d.%m.%Y}: "
+            f"<b>{ml(entry.pure_alcohol_ml)}</b> чистого спирта."
+            f"{phrase_text}"
+        )
+    await callback.answer("Добавлено")
+
+
+@router.callback_query(F.data.startswith("add_cancel:"))
+async def cancel_add_handler(callback: CallbackQuery, db: Database) -> None:
+    if callback.from_user is None or callback.data is None:
+        return
+    token = callback.data.partition(":")[2]
+    async with db.session_factory() as session:
+        cancelled = await cancel_pending_entry(session, token, callback.from_user.id)
+    if not cancelled:
+        await callback.answer(
+            "Отменить может только автор, либо расчёт уже обработан.",
+            show_alert=True,
+        )
+        return
+    if callback.message:
+        await callback.message.edit_text("❌ Добавление отменено. В статистику ничего не записано.")
+    await callback.answer("Отменено")
 
 
 @router.message(Command("stat"))
@@ -314,6 +456,7 @@ async def history_handler(message: Message, db: Database) -> None:
     if not entries:
         await message.answer("История пока пуста.")
         return
+    # Comprehension удобен для преобразования каждого элемента без side effects.
     lines = [
         f"<code>#{entry.id}</code> · {entry.consumed_on:%d.%m.%Y} — "
         f"<b>{ml(entry.pure_alcohol_ml)}</b>: "
@@ -349,10 +492,12 @@ async def edit_handler(
     try:
         async with db.session_factory() as session:
             runtime = await get_runtime_config(session, settings)
+        today = datetime.now(runtime.timezone).date()
         short_calculation = calculate_short_add(description, runtime.drink_overrides)
         if short_calculation is None:
             estimate = await llm.estimate(
                 description,
+                current_date=today,
                 temperature=runtime.llm_temperature,
                 max_tokens=runtime.llm_max_tokens,
             )
@@ -447,7 +592,7 @@ async def admin_config_handler(
     defaults = {
         "timezone": settings.app_timezone,
         "llm_temperature": "0",
-        "llm_max_tokens": "2000",
+        "llm_max_tokens": "4000",
     }
     lines = ["🛠 <b>Runtime-настройки</b>"]
     for key, default in defaults.items():
