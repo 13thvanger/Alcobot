@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.llm import AlcoholLLMClient, LLMError
+from app.llm import SYSTEM_PROMPT, AlcoholLLMClient, LLMError
 
 
 def test_parse_plain_json() -> None:
@@ -64,3 +64,13 @@ def test_parse_consumed_on() -> None:
 def test_reject_future_consumed_on() -> None:
     with pytest.raises(LLMError):
         AlcoholLLMClient._parse_consumed_on("2026-06-26", date(2026, 6, 25))
+
+
+def test_system_prompt_contains_standard_portions() -> None:
+    assert "пиво и сидр: 500 мл" in SYSTEM_PROMPT
+    assert "вино, игристое вино и вермут: 150 мл" in SYSTEM_PROMPT
+    assert "крепкие напитки" in SYSTEM_PROMPT
+    assert "50 мл" in SYSTEM_PROMPT
+    assert "бокал пива: 500 мл" in SYSTEM_PROMPT
+    assert "бокал вина: 150 мл" in SYSTEM_PROMPT
+    assert "шот или стопка крепкого алкоголя: 50 мл" in SYSTEM_PROMPT

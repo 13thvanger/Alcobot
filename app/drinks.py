@@ -180,6 +180,7 @@ RUSSIAN_MONTHS = {
     "декабрь": 12,
     "декабря": 12,
 }
+SERVING_WORDS = {"glass", "shot", "бокал", "шот", "стопка"}
 
 
 def _parse_volume(value: str) -> Decimal | None:
@@ -334,6 +335,10 @@ def calculate_short_add(
     volume: Decimal | None = None
     explicit_abv: Decimal | None = None
     for argument in arguments:
+        # Слова тары не меняют стандартную порцию группы напитка:
+        # beer glass=500 мл, wine glass=150 мл, spirit shot=50 мл.
+        if argument in SERVING_WORDS:
+            continue
         parsed_abv = _parse_abv(argument)
         if parsed_abv is not None:
             if explicit_abv is not None:

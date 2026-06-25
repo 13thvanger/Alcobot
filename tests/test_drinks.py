@@ -20,6 +20,28 @@ def test_drink_uses_default_volume() -> None:
     assert tequila is not None and tequila.volume_ml == Decimal("50")
 
 
+def test_all_drinks_follow_standard_volume_groups() -> None:
+    expected = {
+        "beer": Decimal("500"),
+        "cider": Decimal("500"),
+        "wine": Decimal("150"),
+        "champagne": Decimal("150"),
+        "vermouth": Decimal("150"),
+        "vodka": Decimal("50"),
+        "whiskey": Decimal("50"),
+        "rum": Decimal("50"),
+        "gin": Decimal("50"),
+        "tequila": Decimal("50"),
+        "cognac": Decimal("50"),
+        "liqueur": Decimal("50"),
+        "absinthe": Decimal("50"),
+    }
+    for drink, expected_volume in expected.items():
+        result = calculate_short_add(drink)
+        assert result is not None
+        assert result.volume_ml == expected_volume
+
+
 def test_number_without_drink_is_pure_alcohol() -> None:
     result = calculate_short_add("40")
     assert result is not None
@@ -125,3 +147,22 @@ def test_duplicate_or_future_manual_date_falls_back_to_llm() -> None:
     today = date(2026, 6, 25)
     assert calculate_short_add("beer 24 мая 25 мая", current_date=today) is None
     assert calculate_short_add("beer 2026-06-26", current_date=today) is None
+
+
+def test_standard_serving_words_use_drink_group_volume() -> None:
+    beer = calculate_short_add("beer бокал")
+    wine = calculate_short_add("wine бокал")
+    vodka_shot = calculate_short_add("vodka шот")
+    vodka_stack = calculate_short_add("vodka стопка")
+
+    assert beer is not None and beer.volume_ml == Decimal("500")
+    assert wine is not None and wine.volume_ml == Decimal("150")
+    assert vodka_shot is not None and vodka_shot.volume_ml == Decimal("50")
+    assert vodka_stack is not None and vodka_stack.volume_ml == Decimal("50")
+
+
+def test_explicit_volume_overrides_serving_word() -> None:
+    result = calculate_short_add("beer бокал 400 4%")
+    assert result is not None
+    assert result.volume_ml == Decimal("400")
+    assert result.pure_alcohol_ml == Decimal("16.00")
