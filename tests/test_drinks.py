@@ -188,3 +188,35 @@ def test_serving_word_can_precede_english_drink() -> None:
     assert result is not None
     assert result.volume_ml == Decimal("400")
     assert result.pure_alcohol_ml == Decimal("16.00")
+
+
+def test_multiple_glasses_of_wine() -> None:
+    result = calculate_short_add("2 бокала вина")
+    assert result is not None
+    assert result.volume_ml == Decimal("300")
+    assert result.pure_alcohol_ml == Decimal("36.00")
+
+
+def test_multiple_glasses_with_abv_and_date() -> None:
+    result = calculate_short_add(
+        "2 бокала вина 11% 25.06",
+        current_date=date(2026, 6, 25),
+    )
+    assert result is not None
+    assert result.volume_ml == Decimal("300")
+    assert result.pure_alcohol_ml == Decimal("33.00")
+    assert result.consumed_on == date(2026, 6, 25)
+
+
+def test_multiple_shots_and_english_glasses() -> None:
+    shots = calculate_short_add("3 шота текилы")
+    glasses = calculate_short_add("2 glasses wine 10%")
+
+    assert shots is not None and shots.volume_ml == Decimal("150")
+    assert glasses is not None and glasses.volume_ml == Decimal("300")
+    assert glasses.pure_alcohol_ml == Decimal("30.00")
+
+
+def test_invalid_serving_count_falls_back_to_llm() -> None:
+    assert calculate_short_add("0 бокалов вина") is None
+    assert calculate_short_add("101 бокал вина") is None

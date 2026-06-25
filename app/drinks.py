@@ -180,7 +180,21 @@ RUSSIAN_MONTHS = {
     "декабрь": 12,
     "декабря": 12,
 }
-SERVING_WORDS = {"glass", "shot", "бокал", "шот", "стопка"}
+SERVING_WORDS = {
+    "glass",
+    "glasses",
+    "shot",
+    "shots",
+    "бокал",
+    "бокала",
+    "бокалов",
+    "шот",
+    "шота",
+    "шотов",
+    "стопка",
+    "стопки",
+    "стопок",
+}
 
 
 def _parse_volume(value: str) -> Decimal | None:
@@ -320,6 +334,17 @@ def calculate_short_add(
 
     # Разрешаем естественный порядок "бокал вина" наряду с "wine бокал".
     # Внутри парсера нормализуем его к единому виду: напиток идёт первым.
+    serving_count = 1
+    if (
+        len(parts) >= 3
+        and parts[0].isdigit()
+        and parts[1] in SERVING_WORDS
+        and parts[2] in DRINK_BY_ALIAS
+    ):
+        serving_count = int(parts[0])
+        if serving_count <= 0 or serving_count > 100:
+            return None
+        parts = [parts[2], parts[1], *parts[3:]]
     if len(parts) >= 2 and parts[0] in SERVING_WORDS and parts[1] in DRINK_BY_ALIAS:
         parts = [parts[1], parts[0], *parts[2:]]
 
@@ -362,7 +387,7 @@ def calculate_short_add(
     # false. get(key, default) не выбрасывает исключение при отсутствии ключа.
     override = (overrides or {}).get(drink.key, {})
     if volume is None:
-        volume = override.get("volume", drink.default_volume_ml)
+        volume = override.get("volume", drink.default_volume_ml) * serving_count
     # Явно написанные пользователем проценты важнее runtime-настроек и таблицы.
     abv = explicit_abv or override.get("abv", drink.abv_percent)
     effective_drink = Drink(
